@@ -49,7 +49,7 @@ const adminMiddleware = (req, res, next) => {
 
 const authMiddlewareOptional = async (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader) return next(); // არანაირი ტოკენი — გაიარე
+  if (!authHeader) return next();
 
   const token = authHeader.split(" ")[1];
   if (!token) return next();

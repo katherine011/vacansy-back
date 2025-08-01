@@ -3,9 +3,14 @@ const { body, validationResult } = require("express-validator");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/user.js");
+const Jobs = require("../models/job.js");
 const Company = require("../models/company.js");
 const nodemailer = require("nodemailer");
 const { authMiddleware } = require("../middleware/middleware");
+const multer = require("multer");
+
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
 const router = express.Router();
 
@@ -13,6 +18,8 @@ const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
 });
+
+
 
 router.post(
   "/register/user",
@@ -62,9 +69,8 @@ router.post(
         profilePhoto,
       });
 
-      // JWT ტოკენის გენერაცია
       const token = jwt.sign(
-        { userId: user._id, role },
+        { id: user._id, role: user.role },
         process.env.JWT_SECRET,
         { expiresIn: "1h" }
       );
@@ -134,11 +140,10 @@ router.post(
         registrantSurname,
         description,
         phone,
-        profilePhoto,
+        profilePhoto: profilePhoto || "https://example.com/default.jpg",
         user: user._id,
       });
 
-      // ✅ აქ შეიქმნება ტოკენი — როდესაც user უკვე არსებობს
       const token = jwt.sign(
         { id: user._id, role: user.role },
         process.env.JWT_SECRET,
@@ -149,7 +154,7 @@ router.post(
         message: "Company registered successfully",
         companyId: company._id,
         userId: user._id,
-        token, // ✅ ტოკენი front-end-ს
+        token,
       });
     } catch (err) {
       console.error("Detailed error:", err.stack);
@@ -183,9 +188,6 @@ router.post("/logout", (req, res) => {
   if (!token) {
     return res.status(400).json({ message: "ტოკენი არ არის მოწოდებული" });
   }
-
-  // ოპციონალური: ტოკენის შავ სიაში დამატება (მაგ., Redis-ში ან DB-ში)
-  // blacklistToken(token);
 
   res.status(200).json({ message: "წარმატებით გამოხვედით" });
 });
@@ -238,7 +240,23 @@ router.get("/me", authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
-    res.json({ ...user.toJSON(), role: user.role });
+
+    let response = {
+      id: user._id,
+      role: user.role,
+      email: user.email,
+    };
+
+    if (user.role === "company") {
+      const company = await Company.findOne({ user: user._id });
+      if (company) {
+        response.name = company.companyName;
+      }
+    } else {
+      response.name = user.name || "Unnamed";
+    }
+
+    res.json(response);
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
   }

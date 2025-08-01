@@ -14,6 +14,9 @@ const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
 const streamifier = require("streamifier");
 const nodemailer = require("nodemailer");
+const upload = multer({ storage: multer.memoryStorage() });
+require("dotenv").config();
+const mongoose = require("mongoose");
 
 const router = express.Router();
 
@@ -57,36 +60,6 @@ router.get("/", authMiddlewareOptional, async (req, res) => {
     res.status(500).json({ message: "Server error", error: err.message });
   }
 });
-
-router.get("/pending", authMiddleware, adminMiddleware, async (req, res) => {
-  try {
-    const jobs = await Job.find({ status: "pending" });
-    res.json(jobs);
-  } catch (err) {
-    res.status(500).json({ message: "Server error", error: err.message });
-  }
-});
-
-router.get(
-  "/me",
-  authMiddleware,
-  roleMiddleware(["company"]),
-  async (req, res) => {
-    try {
-      const company = await Company.findOne({ user: req.user.id });
-      if (!company) {
-        return res.status(404).json({ message: "Company not found" });
-      }
-
-      const jobs = await Job.find({ companyId: company._id });
-
-      res.json(jobs);
-    } catch (err) {
-      console.error("Error fetching my jobs:", err.message);
-      res.status(500).json({ message: "Server error", error: err.message });
-    }
-  }
-);
 
 router.post(
   "/",
@@ -138,68 +111,169 @@ router.post(
   }
 );
 
-router.put("/:id/status", authMiddleware, adminMiddleware, async (req, res) => {
+router.get("/pending", authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const { status } = req.body;
-    if (!["approved", "rejected"].includes(status))
-      return res.status(400).json({ message: "Invalid status" });
-    const job = await Job.findById(req.params.id);
-    if (!job || job.status === "approved")
-      return res
-        .status(400)
-        .json({ message: "Job not found or already approved" });
-    job.status = status;
-    await job.save();
-    res.json({ message: `Job ${status}`, job });
+    const jobs = await Job.find({ status: "pending" });
+    res.json(jobs);
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
+  }
+});
+
+router.get(
+  "/me",
+  authMiddleware,
+  roleMiddleware(["company"]),
+  async (req, res) => {
+    try {
+      const company = await Company.findOne({ user: req.user.id });
+
+      if (!company) {
+        return res.status(404).json({ message: "Company not found" });
+      }
+
+      const jobs = await Job.find({ companyId: company._id })
+        .populate("userId", "name email")
+        .populate("companyId", "companyName email");
+
+      const formattedJobs = jobs.map((job) => {
+        const contact = job.userId || job.companyId;
+        const name = contact?.name || contact?.companyName || "უცნობი";
+        const email = contact?.email || "უცნობი";
+
+        return {
+          ...job.toObject(),
+          contact: { name, email },
+        };
+      });
+
+      res.json(formattedJobs);
+    } catch (err) {
+      console.error("Error fetching my jobs:", err.message);
+      res.status(500).json({ message: "Server error", error: err.message });
+    }
+  }
+);
+
+router.get("/user/saved-jobs", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).populate("savedJobs");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json({ savedJobs: user.savedJobs });
+  } catch (err) {
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+});
+
+router.post("/:id/unsave", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    const jobId = req.params.id;
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    user.savedJobs = user.savedJobs.filter(
+      (savedId) => savedId.toString() !== jobId
+    );
+    await user.save();
+
+    res.status(200).json({ message: "Job removed from saved list" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+});
+
+router.put("/:jobId/status", async (req, res) => {
+  const { jobId } = req.params;
+  const { status } = req.body;
+
+  if (!status) {
+    return res.status(400).json({ message: "Status is required" });
+  }
+
+  try {
+    const job = await Job.findByIdAndUpdate(jobId, { status }, { new: true });
+
+    if (!job) {
+      return res.status(404).json({ message: "Job not found" });
+    }
+
+    res.status(200).json({ message: "Status updated", job });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
   }
 });
 
 router.post(
   "/:id/apply",
   authMiddleware,
-  cvUploadMiddleware,
-  multer().single("cv"),
+  roleMiddleware(["user"]),
+  upload.single("cv"),
   async (req, res) => {
     try {
-      const job = await Job.findById(req.params.id);
-      if (!job || job.status !== "approved")
+      const jobId = req.params.id;
+      const userId = req.user.id;
+
+      const job = await Job.findById(jobId);
+      if (!job || job.status !== "approved") {
         return res
           .status(404)
-          .json({ message: "Job not found or not approved" });
+          .json({ message: "ვაკანსია ვერ მოიძებნა ან დამტკიცებული არ არის" });
+      }
 
-      const streamUpload = (req) =>
-        new Promise((resolve, reject) => {
-          const stream = cloudinary.uploader.upload_stream((error, result) =>
-            error ? reject(error) : resolve(result)
-          );
-          streamifier.createReadStream(req.file.buffer).pipe(stream);
-        });
-
-      const result = await streamUpload(req);
-      const cvUrl = result.secure_url;
-
-      const user = await User.findById(req.user.id);
-      if (!user) throw new Error("User not found");
-      user.resume = cvUrl;
-      await user.save();
+      if (!req.file) {
+        return res.status(400).json({ message: "CV ფაილი არ არის მოწოდებული" });
+      }
 
       const company = await Company.findById(job.companyId);
+      if (!company) {
+        return res.status(404).json({ message: "კომპანია ვერ მოიძებნა" });
+      }
+
+      const user = await User.findById(userId);
+      if (!user) {
+        return res.status(404).json({ message: "მომხმარებელი ვერ მოიძებნა" });
+      }
+
       await transporter.sendMail({
         from: process.env.EMAIL_USER,
         to: company.email,
-        subject: "New Job Application",
-        text: `A user has applied for the job "${job.title}". CV: ${cvUrl}`,
-        attachments: [{ filename: "cv.pdf", path: cvUrl }],
+        subject: `ახალი განაცხადი ვაკანსიაზე: ${job.title}`,
+        text: `მომხმარებელი ${user.email} გამოაგზავნა განაცხადი ვაკანსიაზე "${job.title}". მიმაგრებულია CV ფაილი.`,
+        attachments: [
+          {
+            filename: req.file.originalname,
+            content: req.file.buffer,
+          },
+        ],
       });
 
-      res.json({ message: "Application submitted", cvUrl });
-    } catch (err) {
-      res.status(500).json({ message: "Server error", error: err.message });
+      return res.json({ message: "განცხადება წარმატებით გაგზავნილია" });
+    } catch (error) {
+      console.error("CV Upload Error:", error);
+      return res
+        .status(500)
+        .json({ message: "სერვერის შეცდომა", error: error.message });
     }
   }
 );
+
+router.get("/jobs/:id/debug", async (req, res) => {
+  try {
+    const job = await Job.findById(req.params.id);
+    if (!job) {
+      return res.status(404).json({ message: "Job not found" });
+    }
+    res.json({ found: true, job });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.post(
   "/:id/save",
@@ -228,18 +302,25 @@ router.post(
 
 router.get("/:id", async (req, res) => {
   try {
-    const job = await Job.findById(req.params.id);
+    const job = await Job.findById(req.params.id)
+      .populate("userId", "name email")
+      .populate("companyId", "companyName email");
 
     if (!job) {
       return res.status(404).json({ message: "Job not found" });
     }
 
-    // ყველასთვის გამოუშვი თუ approved არის
     if (job.status === "approved") {
-      return res.json(job);
+      const contact = job.userId || job.companyId;
+      const name = contact?.name || contact?.companyName || "უცნობი";
+      const email = contact?.email || "უცნობი";
+
+      return res.json({
+        ...job.toObject(),
+        contact: { name, email },
+      });
     }
 
-    // თუ არაა approved — მოითხოვე ავტორიზაცია
     const token = req.headers.authorization?.split(" ")[1];
     if (!token) {
       return res.status(401).json({ message: "Unauthorized" });
@@ -248,13 +329,21 @@ router.get("/:id", async (req, res) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const company = await Company.findOne({ user: decoded.userId });
 
-    if (
-      decoded.role === "admin" ||
-      (decoded.role === "company" &&
-        company &&
-        job.companyId.toString() === company._id.toString())
-    ) {
-      return res.json(job);
+    const isAdmin = decoded.role === "admin";
+    const isOwner =
+      decoded.role === "company" &&
+      company &&
+      job.companyId.toString() === company._id.toString();
+
+    if (isAdmin || isOwner) {
+      const contact = job.userId || job.companyId;
+      const name = contact?.name || contact?.companyName || "უცნობი";
+      const email = contact?.email || "უცნობი";
+
+      return res.json({
+        ...job.toObject(),
+        contact: { name, email },
+      });
     }
 
     return res.status(403).json({ message: "Access denied" });
@@ -266,48 +355,25 @@ router.get("/:id", async (req, res) => {
 
 router.put("/:id", authMiddleware, async (req, res) => {
   try {
-    const {
-      title,
-      description,
-      companyName,
-      location,
-      salaryRange,
-      workType,
-      experience,
-      education,
-      languages,
-      jobCategory,
-    } = req.body;
     const job = await Job.findById(req.params.id);
-    if (!job) return res.status(404).json({ message: "Job not found" });
-    if (req.user.role !== "company" && req.user.role !== "admin") {
+    if (!job) return res.status(404).json({ message: "ვაკანსია არ მოიძებნა" });
+
+    if (job.status === "approved")
       return res
         .status(403)
-        .json({ message: "Only company or admin can update this job" });
-    }
-    if (
-      req.user.role === "company" &&
-      job.companyId.toString() !== req.user.id
-    ) {
+        .json({ message: "დადასტურებული ვაკანსია არ შეიძლება რედაქტირდეს" });
+
+    if (job.userId.toString() !== req.user.id)
       return res
         .status(403)
-        .json({ message: "You can only update your own jobs" });
-    }
-    job.title = title || job.title;
-    job.description = description || job.description;
-    job.companyName = companyName || job.companyName;
-    job.location = location || job.location;
-    job.salaryRange = salaryRange || job.salaryRange;
-    job.workType = workType || job.workType;
-    job.experience = experience || job.experience;
-    job.education = education || job.education;
-    job.languages = languages || job.languages;
-    job.jobCategory = jobCategory || job.jobCategory;
-    job.status = "pending";
+        .json({ message: "თქვენ არ ხართ ამ ვაკანსიის ავტორი" });
+
+    Object.assign(job, req.body);
     await job.save();
-    res.json({ message: "Job updated and pending admin approval", job });
+
+    res.json({ message: "ვაკანსია განახლდა", job });
   } catch (err) {
-    res.status(500).json({ message: "Server error", error: err.message });
+    res.status(500).json({ message: "შეცდომა", error: err.message });
   }
 });
 
