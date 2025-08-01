@@ -7,7 +7,12 @@ require("dotenv").config();
 
 const app = express();
 
-app.use(cors({ origin: "http://localhost:3000", credentials: true }));
+app.use(
+  cors({
+    origin: "https://vercel.com/katherines-projects-a0a5fcb3/vacansy-front",
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 mongoose
