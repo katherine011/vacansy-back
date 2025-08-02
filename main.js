@@ -9,7 +9,7 @@ const app = express();
 
 app.use(
   cors({
-    origin: "https://vercel.com/katherines-projects-a0a5fcb3/vacansy-front",
+    origin: process.env.FRONT_URL,
     credentials: true,
   })
 );
