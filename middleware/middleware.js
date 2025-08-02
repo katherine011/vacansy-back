@@ -5,6 +5,8 @@ const authMiddleware = (req, res, next) => {
   if (!token) return res.status(401).json({ message: "No token provided" });
 
   try {
+    console.log(token, "token");
+    console.log(process.env.JWT_SECRET, "process env");
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
     next();
@@ -49,17 +51,21 @@ const adminMiddleware = (req, res, next) => {
 
 const authMiddlewareOptional = async (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader) return next();
+  if (!authHeader)
+    return res.status(401).json({ message: "you dont have permition" });
 
   const token = authHeader.split(" ")[1];
-  if (!token) return next();
+  if (!token)
+    return res.status(401).json({ message: "you dont have permition" });
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log(decoded, "decoded");
     req.user = await User.findById(decoded.id);
     next();
   } catch (err) {
-    console.warn("Invalid token, skipping user context");
+    console.warn("Invalid token skipping context");
+    console.log(err, "middlware error");
     next();
   }
 };

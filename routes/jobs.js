@@ -31,7 +31,7 @@ const transporter = nodemailer.createTransport({
   auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
 });
 
-router.get("/", authMiddlewareOptional, async (req, res) => {
+router.get("/", async (req, res) => {
   try {
     const { location, jobCategory, workType } = req.query;
 
